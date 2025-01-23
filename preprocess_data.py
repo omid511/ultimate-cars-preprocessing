@@ -6,8 +6,9 @@ from sklearn.impute import KNNImputer
 
 
 def preprocess_data(filepath):
-    # Load the dataset
+    # Load the dataset and keep track of original NaN indices in target
     df = pd.read_csv(filepath)
+    original_nan_indices = df.index[df["Cars Prices"].isnull()]
 
     # Treat 'Seats' as categorical
     df["Seats"] = df["Seats"].astype("object")
@@ -34,6 +35,9 @@ def preprocess_data(filepath):
     if target is not None:
         df["Cars Prices"] = target
 
+        # Reset 'Cars Prices' to NaN where it was originally NaN
+        df.loc[original_nan_indices, "Cars Prices"] = pd.NA
+
     # Identify and remove outliers using IQR method, considering all columns
     outlier_mask = pd.Series(
         [False] * len(df), index=df.index
@@ -56,13 +60,15 @@ def preprocess_data(filepath):
             outlier_mask | col_outlier_mask
         )  # Update mask for rows with outliers in any column
 
-    # Remove rows with outliers
+    # Remove rows with outliers from both df and target
+    if target is not None:
+        # Only remove from target if not originally NaN
+        target = target[~outlier_mask | original_nan_indices]
     df = df[~outlier_mask]
     print(f"Number of removed outliers: {outlier_mask.sum()}")
 
     # Separate target variable after outlier removal
     if "Cars Prices" in df.columns:
-        target = df["Cars Prices"]
         df = df.drop("Cars Prices", axis=1)
 
     # Update numerical_cols to exclude target variable for PCA
@@ -90,14 +96,24 @@ def preprocess_data(filepath):
     categorical_data = categorical_data.reindex(reduced_df.index)  # Align index
     final_df = pd.concat([reduced_df, categorical_data], axis=1)
 
-    # Reindex the target variable to align with the final feature set
-    if target is not None:
-        target = target.reindex(final_df.index)
-        final_df["Cars Prices"] = target
+    # Create a new Series with the same index as final_df
+    target_reindexed = pd.Series(index=final_df.index)
+
+    # Find the common indices between target and final_df
+    common_indices = target.index.intersection(final_df.index)
+
+    # Populate the new Series with values from target for common indices
+    target_reindexed.loc[common_indices] = target.loc[common_indices]
+
+    # Assign the reindexed target to the 'Cars Prices' column of final_df
+    final_df["Cars Prices"] = target_reindexed
 
     # Scale the target variable
-    target_scaler = StandardScaler()
-    final_df[["Cars Prices"]] = target_scaler.fit_transform(final_df[["Cars Prices"]])
+    if target is not None:
+        target_scaler = StandardScaler()
+        final_df[["Cars Prices"]] = target_scaler.fit_transform(
+            final_df[["Cars Prices"]]
+        )
 
     return final_df
 
@@ -105,7 +121,6 @@ def preprocess_data(filepath):
 # Example usage
 final_df = preprocess_data("parsed_cars_data.csv")
 final_df.to_csv("preprocessed_cars_data.csv", index=False)
-
 
 # Split into train and test sets
 X = final_df.drop("Cars Prices", axis=1)

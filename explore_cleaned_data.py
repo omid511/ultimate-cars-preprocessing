@@ -1,13 +1,8 @@
 import pandas as pd
 
 # Load the parsed dataset
-try:
-    df = pd.read_csv("preprocessed_data.csv")
-except FileNotFoundError:
-    print(
-        "Error: parsed_cars_data.csv not found. Please ensure the file is in the correct directory."
-    )
-    exit()
+df = pd.read_csv("preprocessed_cars_data.csv")
+
 
 # Explore the dataset
 print("Head of the dataset:")
@@ -19,14 +14,12 @@ print(df.info())
 print("\nDescription of the dataset:")
 print(df.describe())
 
-# Analyze unique values in categorical columns
-print("\nUnique values in categorical columns:")
-for column in df.select_dtypes(include="object").columns:
-    if column == "Engines":
-        continue
-    if column == "Turbo":
-        print(f"Column '{column}': {df[column].nunique()} unique values")
-        print(f"Unique values in '{column}':\n{df[column].unique().tolist()}")
-        # Count the occurrences of each value
-        value_counts = df[column].value_counts()
-        print(f"\nCounts of each value in '{column}':\n{value_counts}")
+# Check for NaN values
+print("\nColumns with NaN values:")
+nan_columns = df.columns[df.isnull().any()].tolist()
+if nan_columns:
+    for col in nan_columns:
+        nan_count = df[col].isnull().sum()
+        print(f"  {col}: {nan_count} NaN values")
+else:
+    print("None")
