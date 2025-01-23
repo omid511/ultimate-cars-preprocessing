@@ -1,76 +1,127 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from sklearn.impute import KNNImputer
+
 
 def preprocess_data(filepath):
     # Load the dataset
     df = pd.read_csv(filepath)
 
     # Treat 'Seats' as categorical
-    df['Seats'] = df['Seats'].astype('object')
+    df["Seats"] = df["Seats"].astype("object")
 
-    # Address NaN values using column mode
-    for col in df.columns:
-        if df[col].isnull().any():
-            df[col] = df[col].fillna(df[col].mode()[0])
+    # Drop cars names column
+    df = df.drop("Cars Names", axis=1)
 
-   # Separate target variable before outlier removal
-    if 'Cars Prices' in df.columns:
-        target = df['Cars Prices']
-        df = df.drop('Cars Prices', axis=1)
-    else:
-        target = None
+    # Separate target variable before any preprocessing
+    target = df["Cars Prices"]
+    df = df.drop("Cars Prices", axis=1)
 
-    # Encode categorical values
-    le = LabelEncoder()
-    for col in df.select_dtypes(include=['object']).columns:
-        df[col] = le.fit_transform(df[col])
+    # Address NaN values using KNN imputation
+    numerical_cols_for_imputation = df.select_dtypes(include=["number"]).columns
+    imputer = KNNImputer(n_neighbors=5)
+    df[numerical_cols_for_imputation] = imputer.fit_transform(
+        df[numerical_cols_for_imputation]
+    )
 
-   # Remove outliers using IQR method, excluding target variable
-    numerical_cols = df.select_dtypes(include=['number']).columns
-    for col in numerical_cols:
+    # One-hot encode categorical features
+    categorical_cols = df.select_dtypes(include=["object"]).columns
+    df = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+
+    # Add target back to the dataframe for outlier detection
+    if target is not None:
+        df["Cars Prices"] = target
+
+    # Identify and remove outliers using IQR method, considering all columns
+    outlier_mask = pd.Series(
+        [False] * len(df), index=df.index
+    )  # Initialize mask with False
+
+    for col in df.columns:  # Iterate over all columns
+        # Skip non-numeric and boolean columns
+        if not pd.api.types.is_numeric_dtype(df[col]) or pd.api.types.is_bool_dtype(
+            df[col]
+        ):
+            continue
+
         Q1 = df[col].quantile(0.25)
         Q3 = df[col].quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
-        df = df[(df[col] >= lower_bound) & (df[col] <= upper_bound)]
+        col_outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
+        outlier_mask = (
+            outlier_mask | col_outlier_mask
+        )  # Update mask for rows with outliers in any column
 
-    # Add target variable back if it was removed
-    if target is not None:
-        df['Cars Prices'] = target
+    # Remove rows with outliers
+    df = df[~outlier_mask]
+    print(f"Number of removed outliers: {outlier_mask.sum()}")
+
+    # Separate target variable after outlier removal
+    if "Cars Prices" in df.columns:
+        target = df["Cars Prices"]
+        df = df.drop("Cars Prices", axis=1)
+
+    # Update numerical_cols to exclude target variable for PCA
+    numerical_cols = df.select_dtypes(include=["number", "bool"]).columns
 
     # Standardize numerical values
     scaler = StandardScaler()
     df[numerical_cols] = scaler.fit_transform(df[numerical_cols])
 
-    # Reduce numerical features using PCA
+    print(f"Number of features before PCA: {len(df.columns)}")
+
+    # Reduce numerical features using PCA, excluding target variable
     pca = PCA(n_components=0.95)  # Keep 95% of variance
     numerical_data = df[numerical_cols]
     reduced_data = pca.fit_transform(numerical_data)
-    reduced_df = pd.DataFrame(reduced_data, columns=[f'PC{i}' for i in range(1, pca.n_components_ + 1)])
+    reduced_df = pd.DataFrame(
+        reduced_data, columns=[f"PC{i}" for i in range(1, pca.n_components_ + 1)]
+    )
 
-    # Combine reduced numerical features with categorical features
-    categorical_cols = df.select_dtypes(include=['object']).columns
-    final_df = pd.concat([reduced_df, df[categorical_cols]], axis=1)
+    print(f"Number of features after PCA: {pca.n_components_}")
 
-   # Split into train and test sets, handling missing target variable
-    if 'Cars Prices' in final_df.columns:
-        X = final_df.drop('Cars Prices', axis=1)
-        y = final_df['Cars Prices']
-    else:
-        # If 'Cars Prices' is missing, use a different column or strategy
-        # For example, use the first column as a placeholder target
-        X = final_df.iloc[:, 1:]
-        y = final_df.iloc[:, 0]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Combine reduced numerical features with one-hot encoded categorical features
+    # Ensure the index of categorical_data aligns with reduced_df before concatenation
+    categorical_data = df.select_dtypes(include=["number"]).drop(numerical_cols, axis=1)
+    categorical_data = categorical_data.reindex(reduced_df.index)  # Align index
+    final_df = pd.concat([reduced_df, categorical_data], axis=1)
 
-    return X_train, X_test, y_train, y_test
+    # Reindex the target variable to align with the final feature set
+    if target is not None:
+        target = target.reindex(final_df.index)
+        final_df["Cars Prices"] = target
+
+    # Scale the target variable
+    target_scaler = StandardScaler()
+    final_df[["Cars Prices"]] = target_scaler.fit_transform(final_df[["Cars Prices"]])
+
+    return final_df
+
 
 # Example usage
-X_train, X_test, y_train, y_test = preprocess_data('parsed_cars_data.csv')
+final_df = preprocess_data("parsed_cars_data.csv")
+final_df.to_csv("preprocessed_cars_data.csv", index=False)
+
+
+# Split into train and test sets
+X = final_df.drop("Cars Prices", axis=1)
+y = final_df["Cars Prices"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
 print("X_train shape:", X_train.shape)
 print("X_test shape:", X_test.shape)
 print("y_train shape:", y_train.shape)
 print("y_test shape:", y_test.shape)
+
+# Save the train and test sets separately
+# X_train.to_csv("X_train.csv", index=False)
+# X_test.to_csv("X_test.csv", index=False)
+# y_train.to_csv("y_train.csv", index=False)
+# y_test.to_csv("y_test.csv", index=False)
